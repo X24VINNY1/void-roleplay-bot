@@ -16,6 +16,9 @@ SUCCESS_COLOR = 0x57F287
 WARN_COLOR = 0xFEE75C
 DANGER_COLOR = 0xED4245
 
+OPEN_TICKETS_CATEGORY_ID = 1452274275552723099
+CLOSED_TICKETS_CATEGORY_ID = 1549979830068580373
+
 def get_token():
     env_token = os.environ.get("DISCORD_TOKEN")
     if env_token and len(env_token) > 30:
@@ -258,9 +261,22 @@ class TicketControlsView(ui.View):
 
     @ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close")
     async def close_btn(self, interaction: discord.Interaction, button: ui.Button):
+        guild = interaction.guild
+        ch = interaction.channel
+        
+        closed_cat = guild.get_channel(CLOSED_TICKETS_CATEGORY_ID)
+        if not closed_cat:
+            closed_cat = discord.utils.find(lambda c: isinstance(c, discord.CategoryChannel) and ("archive" in c.name.lower() or "closed" in c.name.lower()), guild.channels)
+        
+        if closed_cat:
+            try:
+                await ch.edit(category=closed_cat, sync_permissions=False)
+            except Exception as e:
+                print(f"[-] Failed to move ticket to closed category: {e}")
+
         embed = discord.Embed(
-            title="🔒 TICKET CLOSED",
-            description=f"Closed by {interaction.user.mention}.\nHigh Command can reopen or permanently delete this channel.",
+            title="🔒 TICKET CLOSED & ARCHIVED",
+            description=f"This ticket was closed by {interaction.user.mention} and moved to <#{CLOSED_TICKETS_CATEGORY_ID}>.\nHigh Command can reopen this case or permanently delete this channel.",
             color=DANGER_COLOR,
             timestamp=datetime.datetime.now(datetime.timezone.utc)
         )
@@ -272,7 +288,25 @@ class TicketCloseView(ui.View):
 
     @ui.button(label="Reopen Ticket", style=discord.ButtonStyle.secondary, emoji="🔓", custom_id="ticket_reopen")
     async def reopen_btn(self, interaction: discord.Interaction, button: ui.Button):
-        embed = discord.Embed(title="🔓 TICKET REOPENED", description=f"Reopened by {interaction.user.mention}.", color=SUCCESS_COLOR)
+        guild = interaction.guild
+        ch = interaction.channel
+        
+        open_cat = guild.get_channel(OPEN_TICKETS_CATEGORY_ID)
+        if not open_cat:
+            open_cat = discord.utils.find(lambda c: isinstance(c, discord.CategoryChannel) and "ticket" in c.name.lower(), guild.channels)
+            
+        if open_cat:
+            try:
+                await ch.edit(category=open_cat, sync_permissions=False)
+            except Exception as e:
+                print(f"[-] Failed to move ticket to open category: {e}")
+
+        embed = discord.Embed(
+            title="🔓 TICKET REOPENED",
+            description=f"This ticket was reopened by {interaction.user.mention} and moved back to <#{OPEN_TICKETS_CATEGORY_ID}>.",
+            color=SUCCESS_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
         await interaction.response.send_message(embed=embed)
 
     @ui.button(label="Delete Channel", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="ticket_delete")
@@ -338,8 +372,10 @@ async def create_ticket_channel(interaction: discord.Interaction, prefix: str, t
     guild = interaction.guild
     member = interaction.user
 
-    # Find ticket category
-    category = discord.utils.find(lambda c: isinstance(c, discord.CategoryChannel) and "ticket" in c.name.lower(), guild.channels)
+    # Open Tickets Category: 1452274275552723099
+    category = guild.get_channel(OPEN_TICKETS_CATEGORY_ID)
+    if not category:
+        category = discord.utils.find(lambda c: isinstance(c, discord.CategoryChannel) and "ticket" in c.name.lower(), guild.channels)
 
     # Permissions
     overwrites = {
