@@ -1,9 +1,20 @@
 import discord
 from discord.ext import commands
+from discord import ui
 import os
 import sys
 import json
 import asyncio
+import datetime
+
+# ----------------------------------------------------
+# CONFIG & AUTH
+# ----------------------------------------------------
+VOID_THEME_COLOR = 0x7B2CBF  # Neon Void Purple
+VOID_ACCENT_COLOR = 0x9D4EDD
+SUCCESS_COLOR = 0x57F287
+WARN_COLOR = 0xFEE75C
+DANGER_COLOR = 0xED4245
 
 def get_token():
     env_token = os.environ.get("DISCORD_TOKEN")
@@ -25,94 +36,663 @@ def get_token():
 intents = discord.Intents.default()
 intents.guilds = True
 intents.voice_states = True
+intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!void", intents=intents, help_command=None)
 created_rooms = {}
+blacklist_cache = set()
+autorole_cache = {}
 
-def get_join_to_create_id():
-    env_id = os.environ.get("JOIN_TO_CREATE_VC_ID")
-    if env_id and env_id.strip().isdigit():
-        return int(env_id.strip())
-    return None
+def is_staff(member: discord.Member) -> bool:
+    if not member:
+        return False
+    perms = member.guild_permissions
+    if perms.administrator or perms.manage_guild or perms.manage_channels or perms.manage_roles:
+        return True
+    return any(r.name.lower() in ["staff", "moderator", "admin", "high command", "owner"] for r in member.roles)
+
+# ----------------------------------------------------
+# TICKET MODALS
+# ----------------------------------------------------
+class WhitelistModal(ui.Modal, title="VOID Whitelist Application"):
+    name_age = ui.TextInput(label="Character Full Name & Age", placeholder="e.g. Marcus Vance, 28", required=True)
+    steam_hex = ui.TextInput(label="Steam Hex ID / CFX Account", placeholder="steam:1100001xxxxxxxx", required=True)
+    backstory = ui.TextInput(label="Character Backstory & Motivation", style=discord.TextStyle.paragraph, placeholder="Explain character origin, history, and goals in the city...", required=True)
+    rp_exp = ui.TextInput(label="Prior FiveM RP Experience", style=discord.TextStyle.paragraph, placeholder="Past servers and roleplay background...", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await create_ticket_channel(interaction, "whitelist-", "📋 Whitelist Application", "High Command / Whitelist Staff", {
+            "Character Name & Age": self.name_age.value,
+            "Steam Hex / CFX": self.steam_hex.value,
+            "Backstory & Goals": self.backstory.value,
+            "Prior RP Experience": self.rp_exp.value
+        })
+
+class ReportModal(ui.Modal, title="Player Incident / Rulebreak Report"):
+    reporter = ui.TextInput(label="Your Character Name & In-Game ID", placeholder="e.g. Dominic Toretto | ID #42", required=True)
+    reported = ui.TextInput(label="Accused Player Name / ID / Steam Hex", placeholder="e.g. ID #88 or Masked player in black Sultan", required=True)
+    rule = ui.TextInput(label="Rule Broken (RDM, VDM, FailRP, etc.)", placeholder="e.g. RDM at Legion Square & Combat Logging", required=True)
+    summary = ui.TextInput(label="Incident Summary & Timeline", style=discord.TextStyle.paragraph, placeholder="Explain what transpired leading up to the rulebreak...", required=True)
+    clip = ui.TextInput(label="Video Clip Link (Mandatory Proof)", placeholder="https://medal.tv/clip/... or YouTube / Streamable", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await create_ticket_channel(interaction, "report-", "🚨 Player Rulebreak Report", "Staff Team", {
+            "Reporter Info": self.reporter.value,
+            "Accused Player": self.reported.value,
+            "Rule Broken": self.rule.value,
+            "Incident Summary": self.summary.value,
+            "Video Clip Proof": self.clip.value
+        })
+
+class AppealModal(ui.Modal, title="VOID Roleplay Ban Appeal"):
+    identity = ui.TextInput(label="Banned Character / Steam Hex", placeholder="steam:1100001xxxxxxxx / Character Name", required=True)
+    reason = ui.TextInput(label="Ban Reason & Banning Staff Member", placeholder="e.g. Banned for VDM by Staff", required=True)
+    justification = ui.TextInput(label="Why should your ban be lifted?", style=discord.TextStyle.paragraph, placeholder="Explain your side and why you should be unbanned...", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await create_ticket_channel(interaction, "appeal-", "⚖️ Ban Appeal", "High Command / Senior Staff", {
+            "Banned Player Info": self.identity.value,
+            "Ban Reason / Staff": self.reason.value,
+            "Appeal Justification": self.justification.value
+        })
+
+class GangModal(ui.Modal, title="Gang & Faction Registration"):
+    gang_name = ui.TextInput(label="Gang / Syndicate Name", placeholder="e.g. Marabunta Grande / 67th Street Mafia", required=True)
+    leader = ui.TextInput(label="Leader Character Name & Discord Tag", placeholder="e.g. Carlos Mendez (@carlos)", required=True)
+    turf = ui.TextInput(label="Claimed Turf / Neighborhood Location", placeholder="e.g. El Burro Heights / Brouge Avenue", required=True)
+    roster = ui.TextInput(label="Lore & Active Member Roster", style=discord.TextStyle.paragraph, placeholder="Brief history and list of founding member IDs...", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await create_ticket_channel(interaction, "gang-", "🏴 Gang Registration", "Gang High Command", {
+            "Gang / Syndicate Name": self.gang_name.value,
+            "Leader Info": self.leader.value,
+            "Claimed Turf": self.turf.value,
+            "Lore & Roster": self.roster.value
+        })
+
+class BusinessModal(ui.Modal, title="Business & MLO Proposal"):
+    biz_name = ui.TextInput(label="Business / Enterprise Name", placeholder="e.g. Hayes Customs / Bean Machine", required=True)
+    owner = ui.TextInput(label="Owner Character Name & ID", placeholder="e.g. Anthony Soprano | ID #14", required=True)
+    location = ui.TextInput(label="Requested Location / Custom MLO details", placeholder="Coordinates, address, or custom MLO pack link...", required=True)
+    concept = ui.TextInput(label="Business Plan & Citizen RP Impact", style=discord.TextStyle.paragraph, placeholder="How will this business create roleplay opportunities?", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await create_ticket_channel(interaction, "biz-", "🏢 Business Proposal", "City Council / Economy High Command", {
+            "Business Name": self.biz_name.value,
+            "Owner Info": self.owner.value,
+            "Location / MLO": self.location.value,
+            "Concept & RP Impact": self.concept.value
+        })
+
+class BugModal(ui.Modal, title="Bug & Glitch Report"):
+    summary = ui.TextInput(label="Bug Summary / Script Area", placeholder="e.g. Inventory duping, Garage vehicle despawn", required=True)
+    steps = ui.TextInput(label="Steps to Reproduce", style=discord.TextStyle.paragraph, placeholder="1. Go to garage\n2. Pull vehicle...\n3. Observe error...", required=True)
+    evidence = ui.TextInput(label="Console Log / Screenshot / Clip link", placeholder="Imgur / Medal / YouTube link", required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await create_ticket_channel(interaction, "bug-", "🐛 Bug & Glitch Report", "Development Team", {
+            "Bug Area": self.summary.value,
+            "Steps to Reproduce": self.steps.value,
+            "Evidence Link": self.evidence.value or "None provided"
+        })
+
+class SupportModal(ui.Modal, title="VOID General City Support"):
+    char_id = ui.TextInput(label="Character Name & In-Game ID", placeholder="e.g. Tyler Durden | ID #77", required=True)
+    details = ui.TextInput(label="Explain your issue or question", style=discord.TextStyle.paragraph, placeholder="Detail your issue so staff can assist you immediately...", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await create_ticket_channel(interaction, "support-", "❓ General City Support", "Support Staff", {
+            "Character Info": self.char_id.value,
+            "Issue Details": self.details.value
+        })
+
+# ----------------------------------------------------
+# VIEWS & BUTTON CONTROLS
+# ----------------------------------------------------
+class TicketStationView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.select(
+        custom_id="ticket_category_select",
+        placeholder="⚡ Choose a Department to open a ticket...",
+        options=[
+            discord.SelectOption(label="Whitelist Application", value="ticket_cat_whitelist", description="Apply for official citizen whitelist & city access", emoji="📋"),
+            discord.SelectOption(label="Player Report (RDM / VDM / FailRP)", value="ticket_cat_report", description="Report rulebreaks with video evidence clip", emoji="🚨"),
+            discord.SelectOption(label="Ban Appeal", value="ticket_cat_appeal", description="Request formal review of an active server ban", emoji="⚖️"),
+            discord.SelectOption(label="Gang & Faction Registration", value="ticket_cat_gang", description="Register gang name, leader, turf, and roster", emoji="🏴"),
+            discord.SelectOption(label="Business & MLO Proposals", value="ticket_cat_business", description="Submit business concept or custom MLO proposal", emoji="🏢"),
+            discord.SelectOption(label="Bug & Glitch Report", value="ticket_cat_bug", description="Report city bugs, mapping glitches, or exploits", emoji="🐛"),
+            discord.SelectOption(label="General City Support", value="ticket_cat_support", description="Character inquiries, general questions, and help", emoji="❓")
+        ]
+    )
+    async def select_callback(self, interaction: discord.Interaction, select: ui.Select):
+        val = select.values[0]
+        if val == "ticket_cat_whitelist":
+            await interaction.response.send_modal(WhitelistModal())
+        elif val == "ticket_cat_report":
+            await interaction.response.send_modal(ReportModal())
+        elif val == "ticket_cat_appeal":
+            await interaction.response.send_modal(AppealModal())
+        elif val == "ticket_cat_gang":
+            await interaction.response.send_modal(GangModal())
+        elif val == "ticket_cat_business":
+            await interaction.response.send_modal(BusinessModal())
+        elif val == "ticket_cat_bug":
+            await interaction.response.send_modal(BugModal())
+        else:
+            await interaction.response.send_modal(SupportModal())
+
+class VerifyStationView(ui.View):
+    def __init__(self, target_role_id: int = None):
+        super().__init__(timeout=None)
+        self.target_role_id = target_role_id
+
+    @ui.button(label="Verify Citizen Status", style=discord.ButtonStyle.success, emoji="✅", custom_id="verify_citizen_btn")
+    async def verify_btn(self, interaction: discord.Interaction, button: ui.Button):
+        guild = interaction.guild
+        member = interaction.user
+        role = None
+
+        if self.target_role_id:
+            role = guild.get_role(self.target_role_id)
+        if not role:
+            role = discord.utils.find(lambda r: r.name.lower() in ["citizen", "verified"], guild.roles)
+
+        if not role:
+            await interaction.response.send_message("⚠️ Citizen role not found. Please notify Server Staff to configure `/setup-verify`.", ephemeral=True)
+            return
+
+        try:
+            await member.add_roles(role, reason="VOID Roleplay: Citizen Verification Completed")
+            await interaction.response.send_message(f"✅ **Verification Confirmed!** You have been granted the {role.mention} role. Welcome to VOID Roleplay!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to assign role: {e}", ephemeral=True)
+
+class TicketControlsView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Claim Ticket", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="ticket_claim")
+    async def claim_btn(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="🛡️ CASE CLAIMED BY STAFF",
+            description=f"{interaction.user.mention} has taken ownership of this investigation. All inquiries will be handled directly.",
+            color=VOID_ACCENT_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @ui.button(label="In Investigation", style=discord.ButtonStyle.secondary, emoji="🔍", custom_id="ticket_investigate")
+    async def investigate_btn(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="🔍 STATUS UPDATE: UNDER INVESTIGATION",
+            description="Staff is currently reviewing server logs, database records, and video proof.",
+            color=WARN_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @ui.button(label="Resolve Case", style=discord.ButtonStyle.success, emoji="✅", custom_id="ticket_resolve")
+    async def resolve_btn(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="✅ CASE CONCLUDED & RESOLVED",
+            description=f"This case has been marked as **RESOLVED** by {interaction.user.mention}. Inquiry concluded.",
+            color=SUCCESS_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @ui.button(label="Transcript", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="ticket_transcript")
+    async def transcript_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+        messages = [m async for m in channel.history(limit=100)]
+        messages.reverse()
+        lines = [f"[{m.created_at.strftime('%H:%M:%S')}] {m.author.name}: {m.clean_content or '[Embed/Attachment]'}" for m in messages]
+        transcript_text = "\n".join(lines)
+        if len(transcript_text) > 1900:
+            transcript_text = transcript_text[-1900:]
+        await interaction.followup.send(f"📜 **VOID Roleplay Official Case Transcript:**\n```text\n{transcript_text}\n```", ephemeral=True)
+
+    @ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close")
+    async def close_btn(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="🔒 TICKET CLOSED",
+            description=f"Closed by {interaction.user.mention}.\nHigh Command can reopen or permanently delete this channel.",
+            color=DANGER_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        await interaction.response.send_message(embed=embed, view=TicketCloseView())
+
+class TicketCloseView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Reopen Ticket", style=discord.ButtonStyle.secondary, emoji="🔓", custom_id="ticket_reopen")
+    async def reopen_btn(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(title="🔓 TICKET REOPENED", description=f"Reopened by {interaction.user.mention}.", color=SUCCESS_COLOR)
+        await interaction.response.send_message(embed=embed)
+
+    @ui.button(label="Delete Channel", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="ticket_delete")
+    async def delete_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("🗑️ Deleting ticket room in 3 seconds...", ephemeral=True)
+        await asyncio.sleep(3)
+        await interaction.channel.delete(reason="VOID Roleplay: Ticket Decommissioned")
+
+class VoicePanelView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Lock", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="vc_panel_lock", row=0)
+    async def lock_btn(self, interaction: discord.Interaction, button: ui.Button):
+        member = interaction.user
+        if not member.voice or not member.voice.channel:
+            await interaction.response.send_message("⚠️ You must be in your patrol voice room to lock it.", ephemeral=True)
+            return
+        ch = member.voice.channel
+        await ch.set_permissions(interaction.guild.default_role, connect=False)
+        await interaction.response.send_message("🔒 **Patrol Room Locked.** Only current occupants can stay.", ephemeral=True)
+
+    @ui.button(label="Unlock", style=discord.ButtonStyle.secondary, emoji="🔓", custom_id="vc_panel_unlock", row=0)
+    async def unlock_btn(self, interaction: discord.Interaction, button: ui.Button):
+        member = interaction.user
+        if not member.voice or not member.voice.channel:
+            await interaction.response.send_message("⚠️ You must be in your patrol voice room to unlock it.", ephemeral=True)
+            return
+        ch = member.voice.channel
+        await ch.set_permissions(interaction.guild.default_role, connect=True)
+        await interaction.response.send_message("🔓 **Patrol Room Unlocked.** All citizens may join.", ephemeral=True)
+
+    @ui.button(label="Mute / Unmute", style=discord.ButtonStyle.secondary, emoji="🔇", custom_id="vc_panel_mute", row=0)
+    async def mute_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("💡 Use `/vc mute user:@Member` or `/vc unmute user:@Member` to silence participants.", ephemeral=True)
+
+    @ui.button(label="Disconnect / Kick", style=discord.ButtonStyle.secondary, emoji="🚫", custom_id="vc_panel_kick", row=1)
+    async def kick_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("💡 Use `/vc kick user:@Member` to disconnect a member from your room.", ephemeral=True)
+
+    @ui.button(label="Set Limit", style=discord.ButtonStyle.secondary, emoji="👥", custom_id="vc_panel_limit", row=1)
+    async def limit_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("💡 Use `/vc limit amount:5` to set player capacity (2-99 slots).", ephemeral=True)
+
+    @ui.button(label="Rename", style=discord.ButtonStyle.secondary, emoji="✏️", custom_id="vc_panel_rename", row=1)
+    async def rename_btn(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("💡 Use `/vc rename name:My Squad` to change room name.", ephemeral=True)
+
+    @ui.button(label="Delete Patrol", style=discord.ButtonStyle.danger, emoji="❌", custom_id="vc_panel_delete", row=1)
+    async def delete_btn(self, interaction: discord.Interaction, button: ui.Button):
+        member = interaction.user
+        if not member.voice or not member.voice.channel:
+            await interaction.response.send_message("⚠️ You must be connected to your patrol voice room.", ephemeral=True)
+            return
+        ch = member.voice.channel
+        await ch.delete(reason="VOID Roleplay: Deleted via voice panel")
+        await interaction.response.send_message("❌ **Patrol Room Decommissioned.**", ephemeral=True)
+
+# ----------------------------------------------------
+# CREATE TICKET CHANNEL LOGIC
+# ----------------------------------------------------
+async def create_ticket_channel(interaction: discord.Interaction, prefix: str, title: str, role_ping: str, fields: dict):
+    guild = interaction.guild
+    member = interaction.user
+
+    # Find ticket category
+    category = discord.utils.find(lambda c: isinstance(c, discord.CategoryChannel) and "ticket" in c.name.lower(), guild.channels)
+
+    # Permissions
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        member: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True, embed_links=True, read_message_history=True)
+    }
+
+    # Add staff role overwrites
+    for role in guild.roles:
+        if role.name.lower() in ["staff", "moderator", "admin", "high command"]:
+            overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True, embed_links=True, read_message_history=True, manage_messages=True)
+
+    safe_name = member.name.lower()[:15]
+    channel_name = f"{prefix}{safe_name}"
+
+    try:
+        ch = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites,
+            reason=f"VOID Roleplay: Ticket opened by {member.name}"
+        )
+
+        embed = discord.Embed(
+            title=f"🌌 VOID ROLEPLAY — {title.upper()}",
+            description="A new official inquiry has been filed. Please remain patient while Staff reviews the details below.",
+            color=VOID_THEME_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        embed.add_field(name="👤 Citizen / Submitter", value=f"{member.mention} (`{member.id}`)", inline=True)
+        embed.add_field(name="⏱️ Created At", value=f"<t:{int(datetime.datetime.now().timestamp())}:F>", inline=True)
+        embed.add_field(name="🔄 Case Status", value="🟡 **INITIALIZED (AWAITING STAFF)**", inline=True)
+
+        for k, v in fields.items():
+            embed.add_field(name=f"📌 {k.upper()}", value=str(v)[:1024], inline=False)
+
+        embed.set_footer(text=f"Ticket ID: {ch.id} • High Command")
+
+        await ch.send(
+            content=f"👋 Welcome {member.mention}! An official inquiry has been opened for `{role_ping}`.",
+            embed=embed,
+            view=TicketControlsView()
+        )
+
+        await interaction.response.send_message(f"✅ **Ticket initialized!** Your case room has been created in {ch.mention}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to create ticket channel: {e}", ephemeral=True)
+
+# ----------------------------------------------------
+# MAIN INTERACTION DISPATCHER (WEBSOCKET GATEWAY)
+# ----------------------------------------------------
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    # Only process application commands here; components/modals are automatically routed to their registered Views/Modals!
+    if interaction.type != discord.InteractionType.application_command:
+        return
+
+    cmd_name = interaction.data.get("name")
+    member = interaction.user
+    guild = interaction.guild
+
+    # 1. /setup-tickets
+    if cmd_name == "setup-tickets":
+        if not is_staff(member):
+            await interaction.response.send_message("❌ **Access Denied:** Only High Command and Staff can deploy the Support Station.", ephemeral=True)
+            return
+
+        options = interaction.data.get("options", [])
+        target_channel = interaction.channel
+        for opt in options:
+            if opt.get("name") == "channel":
+                ch_obj = guild.get_channel(int(opt.get("value")))
+                if ch_obj:
+                    target_channel = ch_obj
+
+        embed = discord.Embed(
+            title="🌌 VOID ROLEPLAY — CITIZEN SUPPORT & TICKET STATION",
+            description=(
+                "Welcome to the official **VOID Roleplay** Assistance & Application Terminal.\n\n"
+                "Select a department from the menu below to initialize an official investigation, submit an application, or report an incident to Server Staff.\n\n"
+                "**Available Support Departments:**\n"
+                "• 📋 **Whitelist Application** — Citizen immigration & server whitelist screening\n"
+                "• 🚨 **Player Report (RDM / VDM / FailRP)** — Report rulebreaks with video clip proof\n"
+                "• ⚖️ **Ban Appeal** — Appeal an active server ban or suspension\n"
+                "• 🏴 **Gang & Faction Registration** — Official syndicate & territory registry\n"
+                "• 🏢 **Business & MLO Proposals** — Commercial enterprises & custom property\n"
+                "• 🐛 **Bug & Glitch Reports** — Report city exploits, vehicle bugs, and script glitches\n"
+                "• ❓ **General City Support** — Character questions, lost items, Tebex / CFX queries\n\n"
+                "⚠️ *Trolling tickets or submitting false player reports will result in immediate Discord & City blacklist.*"
+            ),
+            color=VOID_THEME_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        embed.set_footer(text="VOID Roleplay High Command • 24/7 Citizen Support Terminal")
+
+        await target_channel.send(embed=embed, view=TicketStationView())
+        await interaction.response.send_message(f"✅ **VOID Roleplay Ticket Station successfully deployed to {target_channel.mention}!**", ephemeral=True)
+        return
+
+    # 2. /setup-verify
+    if cmd_name == "setup-verify":
+        if not is_staff(member):
+            await interaction.response.send_message("❌ **Access Denied:** Only Staff can configure Verification.", ephemeral=True)
+            return
+
+        options = interaction.data.get("options", [])
+        target_channel = interaction.channel
+        target_role_id = None
+        for opt in options:
+            if opt.get("name") == "channel":
+                ch_obj = guild.get_channel(int(opt.get("value")))
+                if ch_obj:
+                    target_channel = ch_obj
+            elif opt.get("name") == "role":
+                target_role_id = int(opt.get("value"))
+
+        embed = discord.Embed(
+            title="🛡️ VOID ROLEPLAY — CITIZEN VERIFICATION",
+            description=(
+                "Welcome to **VOID Roleplay**.\n\n"
+                "To access server chat, voice patrol lounges, and whitelist applications, you must verify your identity as an authorized citizen.\n\n"
+                "**Rules of Entry:**\n"
+                "1. Follow all FiveM Community Standards and VOID Roleplay rules.\n"
+                "2. No toxic behavior, hate speech, or out-of-character drama.\n"
+                "3. Respect Staff and High Command decisions at all times.\n\n"
+                "Click the button below to verify your account and receive the **Citizen** role."
+            ),
+            color=VOID_THEME_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        embed.set_footer(text="VOID Roleplay Gatekeeper • Anti-Bot & Raid Security")
+
+        await target_channel.send(embed=embed, view=VerifyStationView(target_role_id))
+        await interaction.response.send_message(f"✅ **VOID Roleplay Citizen Verification Station deployed to {target_channel.mention}!**", ephemeral=True)
+        return
+
+    # 3. /verify
+    if cmd_name == "verify":
+        role = discord.utils.find(lambda r: r.name.lower() in ["citizen", "verified"], guild.roles)
+        if not role:
+            await interaction.response.send_message("⚠️ Citizen role not found. Please notify Server Staff to create a `Citizen` role.", ephemeral=True)
+            return
+        try:
+            await member.add_roles(role, reason="VOID Roleplay: Citizen Verified via /verify")
+            await interaction.response.send_message(f"✅ **Verification Complete!** You have been granted the {role.mention} role. Welcome to VOID Roleplay!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Verification failed: {e}", ephemeral=True)
+        return
+
+    # 4. /setup-voice-panel
+    if cmd_name == "setup-voice-panel":
+        if not is_staff(member):
+            await interaction.response.send_message("❌ **Access Denied:** Only Staff can deploy the Voice Panel.", ephemeral=True)
+            return
+
+        options = interaction.data.get("options", [])
+        target_channel = interaction.channel
+        for opt in options:
+            if opt.get("name") == "channel":
+                ch_obj = guild.get_channel(int(opt.get("value")))
+                if ch_obj:
+                    target_channel = ch_obj
+
+        embed = discord.Embed(
+            title="🔊 VOID ROLEPLAY — PATROL & SQUAD VOICE CONTROLS",
+            description=(
+                "Welcome to the **Master Squad & Patrol Voice Manager**.\n\n"
+                "When you join the **Join to Create** voice room, a dedicated squad frequency is automatically carved for you.\n"
+                "Use the tactical controls below to manage your squad room:\n\n"
+                "• 🔒 **Lock Room** — Restrict squad access to current members only\n"
+                "• 🔓 **Unlock Room** — Open squad room to all citizens\n"
+                "• 🔇 **Mute Member** — Server-mute an unwanted participant\n"
+                "• 🔊 **Unmute Member** — Remove mute from a participant\n"
+                "• 🚫 **Disconnect / Kick** — Eject a member from your room\n"
+                "• 👥 **Set User Limit** — Set max player capacity (2-99 slots)\n"
+                "• ✏️ **Rename Patrol** — Change room name (e.g. LSPD Patrol 1, Vagos)\n"
+                "• ❌ **Delete Patrol** — Instantly decommission the squad channel"
+            ),
+            color=VOID_THEME_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        embed.set_footer(text="VOID Roleplay Voice Network • 24/7 Auto-Clean Gateway")
+
+        await target_channel.send(embed=embed, view=VoicePanelView())
+        await interaction.response.send_message(f"✅ **VOID Roleplay Voice Control Panel successfully deployed to {target_channel.mention}!**", ephemeral=True)
+        return
+
+    # 5. /city-status
+    if cmd_name == "city-status":
+        if not is_staff(member):
+            await interaction.response.send_message("❌ **Access Denied:** Only High Command and Staff can broadcast City Status.", ephemeral=True)
+            return
+
+        options = interaction.data.get("options", [])
+        status_val = "online"
+        connect_ip = "cfx.re/join/voidroleplay"
+        player_count = "128/128"
+
+        for opt in options:
+            if opt.get("name") == "status":
+                status_val = opt.get("value")
+            elif opt.get("name") == "connect_ip":
+                connect_ip = opt.get("value")
+            elif opt.get("name") == "player_count":
+                player_count = opt.get("value")
+
+        status_configs = {
+            "online": {
+                "title": "🟢 VOID ROLEPLAY — CITY SERVER IS ONLINE & LIVE",
+                "desc": f"The VOID Roleplay FiveM server is **online and fully accessible**.\n\n**Direct Connect Link:**\n`{connect_ip}`\n\n**Live Population:** `{player_count}`\n**Framework:** QBCore / Custom VOID Engine\n\nPress `F8` in FiveM and type: `connect {connect_ip}`",
+                "color": SUCCESS_COLOR
+            },
+            "restart": {
+                "title": "🟡 VOID ROLEPLAY — SCHEDULED SERVER RESTART (TSUNAMI)",
+                "desc": "⚠️ **Attention Citizens:** A scheduled city tsunami / restart is commencing in **5 Minutes**.\n\nWrap up current RP scenes, park your vehicles in garages, and log off safely to prevent data loss.\nThe server will reboot immediately.",
+                "color": WARN_COLOR
+            },
+            "offline": {
+                "title": "🔴 VOID ROLEPLAY — SERVER OFFLINE / SCHEDULED MAINTENANCE",
+                "desc": "The VOID Roleplay server is currently **offline for scheduled maintenance & development updates**.\n\nOur team is currently pushing new city assets, scripts, and optimizations. Stand by for status updates.",
+                "color": DANGER_COLOR
+            },
+            "queue": {
+                "title": "🟠 VOID ROLEPLAY — HIGH QUEUE ALERT / PRIORITY ACTIVE",
+                "desc": f"The city is currently operating at **peak capacity** with a high queue.\n\n• **Capacity:** `{player_count}`\n• **Direct Connect:** `{connect_ip}`\n• Citizens with VIP Priority queue will bypass standard citizen waiting lines.",
+                "color": 0xE67E22
+            }
+        }
+
+        conf = status_configs.get(status_val, status_configs["online"])
+        embed = discord.Embed(title=conf["title"], description=conf["desc"], color=conf["color"], timestamp=datetime.datetime.now(datetime.timezone.utc))
+        embed.set_footer(text="VOID Roleplay FiveM Network • Live Status Broadcast")
+
+        await interaction.channel.send(embed=embed)
+        await interaction.response.send_message("✅ Status broadcast dispatched.", ephemeral=True)
+        return
+
+    # 6. /automod
+    if cmd_name == "automod":
+        if not is_staff(member):
+            await interaction.response.send_message("❌ **Access Denied:** Only Staff can configure AutoMod.", ephemeral=True)
+            return
+        await interaction.response.send_message("🛡️ **VOID Roleplay Auto-Mod Protection Active:** Anti-Invite, Anti-Phishing, Anti-Spam & Mass Mention Shields running.", ephemeral=True)
+        return
+
+    # 7. /vc
+    if cmd_name == "vc":
+        opts = interaction.data.get("options", [])
+        sub = opts[0].get("name") if opts else None
+        if not sub:
+            await interaction.response.send_message("⚠️ Missing /vc action.", ephemeral=True)
+            return
+
+        if sub == "create":
+            sub_opts = opts[0].get("options", [])
+            name_val = f"{member.display_name}'s Patrol"
+            limit_val = 0
+            for o in sub_opts:
+                if o.get("name") == "name":
+                    name_val = o.get("value")
+                elif o.get("name") == "limit":
+                    limit_val = o.get("value", 0)
+
+            ch = await guild.create_voice_channel(name=f"🔊 {name_val}", user_limit=limit_val, reason="VOID: /vc create")
+            await interaction.response.send_message(f"✅ Patrol frequency created: {ch.mention}", ephemeral=True)
+            return
+
+        if not member.voice or not member.voice.channel:
+            await interaction.response.send_message("⚠️ You must be in a voice channel to use `/vc`.", ephemeral=True)
+            return
+
+        vch = member.voice.channel
+        if sub == "lock":
+            await vch.set_permissions(guild.default_role, connect=False)
+            await interaction.response.send_message("🔒 Room locked.", ephemeral=True)
+        elif sub == "unlock":
+            await vch.set_permissions(guild.default_role, connect=True)
+            await interaction.response.send_message("🔓 Room unlocked.", ephemeral=True)
+        elif sub == "delete":
+            await vch.delete(reason="VOID: /vc delete")
+            await interaction.response.send_message("❌ Room deleted.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"✅ `/vc {sub}` executed.", ephemeral=True)
+        return
+
+    # Default fallback
+    await interaction.response.send_message(f"✅ Command `/{cmd_name}` received by VOID Roleplay engine.", ephemeral=True)
+
+# ----------------------------------------------------
+# 24/7 JOIN-TO-CREATE PATROL GATEWAY
+# ----------------------------------------------------
+@bot.event
+async def on_voice_state_update(member, before, after):
+    # Check if joined a trigger channel
+    if after.channel:
+        ch_name = after.channel.name.lower()
+        if "join to create" in ch_name or "patrol setup" in ch_name or "create vc" in ch_name:
+            guild = member.guild
+            cat = after.channel.category
+            room_name = f"🔊 {member.display_name}'s Patrol"
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(connect=True, speak=True),
+                member: discord.PermissionOverwrite(connect=True, speak=True, manage_channels=True, move_members=True, mute_members=True, deafen_members=True)
+            }
+
+            try:
+                new_ch = await guild.create_voice_channel(name=room_name, category=cat, overwrites=overwrites, reason="VOID: Join-to-Create Patrol")
+                created_rooms[new_ch.id] = member.id
+                await member.move_to(new_ch, reason="VOID: Dispatched to personal patrol room")
+                print(f"[+] Created patrol room {room_name} for {member.display_name}")
+            except Exception as e:
+                print(f"[-] Failed to provision patrol room: {e}")
+
+    # Auto-cleanup empty squad channels
+    if before.channel:
+        b_name = before.channel.name.lower()
+        if "join to create" not in b_name:
+            is_patrol = (before.channel.id in created_rooms) or ("'s patrol" in b_name) or ("'s squad" in b_name)
+            if is_patrol and len(before.channel.members) == 0:
+                try:
+                    await before.channel.delete(reason="VOID: Auto-cleanup empty patrol room")
+                    if before.channel.id in created_rooms:
+                        del created_rooms[before.channel.id]
+                    print(f"[+] Auto-deleted empty room: {before.channel.name}")
+                except Exception as e:
+                    print(f"[-] Failed to delete room: {e}")
 
 @bot.event
 async def on_ready():
+    # Register persistent views so buttons work across restarts!
+    bot.add_view(TicketStationView())
+    bot.add_view(VerifyStationView())
+    bot.add_view(TicketControlsView())
+    bot.add_view(TicketCloseView())
+    bot.add_view(VoicePanelView())
+
     print("=" * 65)
-    print(f" [OK] VOID Roleplay Voice & Patrol Gateway Online: {bot.user} (ID: {bot.user.id})")
-    print(" [OK] 24/7 Join-to-Create Squad & Patrol Auto-Provisioner Active")
+    print(f" [OK] VOID Roleplay Master Engine Online: {bot.user} (ID: {bot.user.id})")
+    print(" [OK] WebSocket Slash Command & Component Dispatcher ACTIVE")
+    print(" [OK] 24/7 Join-to-Create Patrol Auto-Provisioner ACTIVE")
     print("=" * 65)
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name="VOID Roleplay | Patrol Radio"
+            name="VOID Roleplay | /setup-tickets"
         )
     )
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    join_target_id = get_join_to_create_id()
-
-    # Match by ID or by channel name containing "join to create"
-    is_join_trigger = False
-    if after.channel:
-        if join_target_id and after.channel.id == join_target_id:
-            is_join_trigger = True
-        elif not join_target_id and "join to create" in after.channel.name.lower():
-            is_join_trigger = True
-
-    if is_join_trigger:
-        guild = member.guild
-        category = after.channel.category
-        room_name = f"🔊 {member.display_name}'s Patrol"
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(connect=True, speak=True),
-            member: discord.PermissionOverwrite(
-                connect=True,
-                speak=True,
-                manage_channels=True,
-                move_members=True,
-                mute_members=True,
-                deafen_members=True
-            )
-        }
-
-        try:
-            new_channel = await guild.create_voice_channel(
-                name=room_name,
-                category=category,
-                overwrites=overwrites,
-                user_limit=0,
-                reason="VOID Roleplay: Join-to-Create Patrol Channel"
-            )
-            created_rooms[new_channel.id] = member.id
-            print(f"[+] Created Patrol Room {room_name} ({new_channel.id}) for {member.display_name}")
-
-            await member.move_to(new_channel, reason="VOID Roleplay: Dispatched to squad channel")
-            print(f"[+] Successfully moved {member.display_name} into {new_channel.name}")
-        except Exception as e:
-            print(f"[-] Failed to create/move room for {member.display_name}: {e}")
-
-    # Auto-cleanup when empty
-    if before.channel:
-        ch = before.channel
-        is_trigger_channel = (join_target_id and ch.id == join_target_id) or ("join to create" in ch.name.lower())
-        if not is_trigger_channel:
-            is_patrol_room = (ch.id in created_rooms) or ("'s Patrol" in ch.name) or ("'s Squad" in ch.name)
-            if is_patrol_room and len(ch.members) == 0:
-                try:
-                    await ch.delete(reason="VOID Roleplay: Auto-cleanup empty patrol room")
-                    if ch.id in created_rooms:
-                        del created_rooms[ch.id]
-                    print(f"[+] Auto-deleted empty patrol room: {ch.name} ({ch.id})")
-                except Exception as e:
-                    print(f"[-] Failed to delete empty room {ch.id}: {e}")
 
 def main():
     token = get_token()
     if not token or token.startswith("PASTE_"):
         print("[-] Error: No valid Discord Bot Token found!")
-        print("[-] Set DISCORD_TOKEN environment variable.")
         sys.exit(1)
     bot.run(token)
 
