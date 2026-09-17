@@ -3,6 +3,7 @@ import { InteractionType, InteractionResponseType, verifyKey } from 'discord-int
 const DISCORD_API = 'https://discord.com/api/v10';
 const TICKETS_CATEGORY_ID = process.env.TICKETS_CATEGORY_ID || '1452274275552723099';
 const CLOSED_CATEGORY_ID = process.env.CLOSED_CATEGORY_ID || '1549979830068580373';
+const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID || '1452274255294234665';
 const TRANSCRIPTS_CHANNEL_ID = process.env.TRANSCRIPTS_CHANNEL_ID || '';
 const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || '';
 const VOICE_PANEL_CHANNEL_ID = process.env.VOICE_PANEL_CHANNEL_ID || '';
@@ -38,11 +39,9 @@ function isStaff(member) {
   if (!member) return false;
   try {
     const permissions = BigInt(member.permissions || '0');
-    // 0x8 = Admin, 0x20 = Manage Guild, 0x10 = Manage Channels, 0x10000000 = Manage Roles
-    if ((permissions & 0x8n) === 0x8n || (permissions & 0x20n) === 0x20n || (permissions & 0x10n) === 0x10n || (permissions & 0x10000000n) === 0x10000000n) return true;
+    if ((permissions & 0x8n) === 0x8n) return true;
   } catch (_) {}
-  const staffRoleId = process.env.STAFF_ROLE_ID;
-  if (staffRoleId && member.roles && member.roles.includes(staffRoleId)) return true;
+  if (member.roles && member.roles.includes(STAFF_ROLE_ID)) return true;
   return false;
 }
 
@@ -1875,7 +1874,7 @@ async function handleModalSubmit(interaction) {
     await discordFetch('/channels/' + newTicketChannel.id + '/messages', {
       method: 'POST',
       body: JSON.stringify({
-        content: '👋 Welcome <@' + userId + '>! An official inquiry has been opened for `' + meta.rolePing + '`.',
+        content: '👋 Welcome <@' + userId + '>! An official inquiry has been opened for <@&' + STAFF_ROLE_ID + '>.',
         embeds: [ticketEmbed],
         components: [staffRow1]
       })
@@ -1906,6 +1905,13 @@ async function handleTicketStaffAction(interaction, action) {
   const channelId = interaction.channel_id;
   const member = interaction.member;
   const userId = member?.user?.id;
+
+  if (!isStaff(member)) {
+    return {
+      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      data: { content: '❌ **Access Denied:** Only <@&' + STAFF_ROLE_ID + '> can perform actions on this ticket.', flags: 64 }
+    };
+  }
 
   if (action === 'ticket_claim') {
     return {
