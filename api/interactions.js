@@ -1,7 +1,8 @@
 import { InteractionType, InteractionResponseType, verifyKey } from 'discord-interactions';
 
 const DISCORD_API = 'https://discord.com/api/v10';
-const TICKETS_CATEGORY_ID = process.env.TICKETS_CATEGORY_ID || '';
+const TICKETS_CATEGORY_ID = process.env.TICKETS_CATEGORY_ID || '1452274275552723099';
+const CLOSED_CATEGORY_ID = process.env.CLOSED_CATEGORY_ID || '1549979830068580373';
 const TRANSCRIPTS_CHANNEL_ID = process.env.TRANSCRIPTS_CHANNEL_ID || '';
 const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || '';
 const VOICE_PANEL_CHANNEL_ID = process.env.VOICE_PANEL_CHANNEL_ID || '';
@@ -1977,9 +1978,20 @@ async function handleTicketStaffAction(interaction, action) {
   }
 
   if (action === 'ticket_close') {
+    try {
+      if (CLOSED_CATEGORY_ID) {
+        await discordFetch('/channels/' + channelId, {
+          method: 'PATCH',
+          body: JSON.stringify({ parent_id: CLOSED_CATEGORY_ID })
+        });
+      }
+    } catch (e) {
+      console.error('Failed to move to closed category:', e);
+    }
+
     const closeEmbed = {
-      title: '🔒 TICKET CLOSED',
-      description: 'This ticket was closed by <@' + userId + '>.\nHigh Command can reopen this inquiry or permanently archive and delete this channel.',
+      title: '🔒 TICKET CLOSED & ARCHIVED',
+      description: 'This ticket was closed by <@' + userId + '> and moved to <#' + CLOSED_CATEGORY_ID + '>.\nHigh Command can reopen this inquiry or permanently delete this channel.',
       color: 0xED4245,
       timestamp: new Date().toISOString()
     };
@@ -2002,12 +2014,23 @@ async function handleTicketStaffAction(interaction, action) {
   }
 
   if (action === 'ticket_reopen') {
+    try {
+      if (TICKETS_CATEGORY_ID) {
+        await discordFetch('/channels/' + channelId, {
+          method: 'PATCH',
+          body: JSON.stringify({ parent_id: TICKETS_CATEGORY_ID })
+        });
+      }
+    } catch (e) {
+      console.error('Failed to move back to open category:', e);
+    }
+
     return {
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: {
         embeds: [{
           title: '🔓 TICKET REOPENED',
-          description: 'This case room was reopened by <@' + userId + '>.',
+          description: 'This case room was reopened by <@' + userId + '> and moved back to <#' + TICKETS_CATEGORY_ID + '>.',
           color: 0x57F287
         }]
       }
