@@ -296,7 +296,6 @@ async function handleSetupTickets(interaction) {
       'Select a department from the menu below to initialize an official investigation, submit an application, or report an incident to Server Staff.',
       '',
       '**Available Support Departments:**',
-      '• 📋 **Whitelist Application** — Citizen immigration & server whitelist screening',
       '• 🚨 **Player Report (RDM / VDM / FailRP)** — Report rulebreaks with video clip proof',
       '• ⚖️ **Ban Appeal** — Appeal an active server ban or suspension',
       '• 🏴 **Gang & Faction Registration** — Official syndicate & territory registry',
@@ -321,12 +320,6 @@ async function handleSetupTickets(interaction) {
         custom_id: 'ticket_category_select',
         placeholder: '⚡ Choose a Department to open a ticket...',
         options: [
-          {
-            label: 'Whitelist Application',
-            value: 'ticket_cat_whitelist',
-            description: 'Apply for official citizen whitelist & city access',
-            emoji: { name: '📋' }
-          },
           {
             label: 'Player Report (RDM / VDM / FailRP)',
             value: 'ticket_cat_report',
