@@ -161,7 +161,6 @@ class TicketStationView(ui.View):
         custom_id="ticket_category_select",
         placeholder="⚡ Choose a Department to open a ticket...",
         options=[
-            discord.SelectOption(label="Whitelist Application", value="ticket_cat_whitelist", description="Apply for official citizen whitelist & city access", emoji="📋"),
             discord.SelectOption(label="Player Report (RDM / VDM / FailRP)", value="ticket_cat_report", description="Report rulebreaks with video evidence clip", emoji="🚨"),
             discord.SelectOption(label="Ban Appeal", value="ticket_cat_appeal", description="Request formal review of an active server ban", emoji="⚖️"),
             discord.SelectOption(label="Gang & Faction Registration", value="ticket_cat_gang", description="Register gang name, leader, turf, and roster", emoji="🏴"),
@@ -172,9 +171,7 @@ class TicketStationView(ui.View):
     )
     async def select_callback(self, interaction: discord.Interaction, select: ui.Select):
         val = select.values[0]
-        if val == "ticket_cat_whitelist":
-            await interaction.response.send_modal(WhitelistModal())
-        elif val == "ticket_cat_report":
+        if val == "ticket_cat_report":
             await interaction.response.send_modal(ReportModal())
         elif val == "ticket_cat_appeal":
             await interaction.response.send_modal(AppealModal())
@@ -457,7 +454,6 @@ async def on_interaction(interaction: discord.Interaction):
                 "Welcome to the official **VOID Roleplay** Assistance & Application Terminal.\n\n"
                 "Select a department from the menu below to initialize an official investigation, submit an application, or report an incident to Server Staff.\n\n"
                 "**Available Support Departments:**\n"
-                "• 📋 **Whitelist Application** — Citizen immigration & server whitelist screening\n"
                 "• 🚨 **Player Report (RDM / VDM / FailRP)** — Report rulebreaks with video clip proof\n"
                 "• ⚖️ **Ban Appeal** — Appeal an active server ban or suspension\n"
                 "• 🏴 **Gang & Faction Registration** — Official syndicate & territory registry\n"
