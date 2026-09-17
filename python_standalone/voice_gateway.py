@@ -6,6 +6,7 @@ import sys
 import json
 import asyncio
 import datetime
+import io
 
 # ----------------------------------------------------
 # CONFIG & AUTH
@@ -19,6 +20,48 @@ DANGER_COLOR = 0xED4245
 OPEN_TICKETS_CATEGORY_ID = 1452274275552723099
 CLOSED_TICKETS_CATEGORY_ID = 1549979830068580373
 STAFF_ROLE_ID = 1452274255294234665
+TRANSCRIPTS_CHANNEL_ID = 1540878462305312879
+
+BLACKLIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blacklist.json")
+AUTOROLE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "autorole.json")
+
+def load_blacklist():
+    if os.path.exists(BLACKLIST_FILE):
+        try:
+            with open(BLACKLIST_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+                return {int(x) for x in raw if str(x).isdigit()}
+        except Exception:
+            pass
+    return set()
+
+def save_blacklist(data_set):
+    try:
+        with open(BLACKLIST_FILE, "w", encoding="utf-8") as f:
+            json.dump([int(x) for x in data_set], f, indent=2)
+    except Exception as e:
+        print(f"[-] Failed to save blacklist: {e}")
+
+blacklist_cache = load_blacklist()
+
+def load_autorole():
+    if os.path.exists(AUTOROLE_FILE):
+        try:
+            with open(AUTOROLE_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+                return {int(k): int(v) for k, v in raw.items() if str(k).isdigit() and str(v).isdigit()}
+        except Exception:
+            pass
+    return {}
+
+def save_autorole(data_dict):
+    try:
+        with open(AUTOROLE_FILE, "w", encoding="utf-8") as f:
+            json.dump({str(k): int(v) for k, v in data_dict.items()}, f, indent=2)
+    except Exception as e:
+        print(f"[-] Failed to save autorole: {e}")
+
+autorole_cache = load_autorole()
 
 def get_token():
     env_token = os.environ.get("DISCORD_TOKEN")
@@ -45,8 +88,6 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!void", intents=intents, help_command=None)
 created_rooms = {}
-blacklist_cache = set()
-autorole_cache = {}
 
 def is_staff(member: discord.Member) -> bool:
     if not member:
@@ -57,6 +98,13 @@ def is_staff(member: discord.Member) -> bool:
     if perms and perms.administrator:
         return True
     return False
+
+def is_blacklisted(member: discord.Member) -> bool:
+    if not member:
+        return False
+    if member.id in blacklist_cache or int(member.id) in blacklist_cache:
+        return True
+    return any(r.name.lower() in ["blacklisted", "ticket ban", "ticket banned"] for r in getattr(member, 'roles', []))
 
 # ----------------------------------------------------
 # TICKET MODALS
@@ -173,6 +221,10 @@ class TicketStationView(ui.View):
         ]
     )
     async def select_callback(self, interaction: discord.Interaction, select: ui.Select):
+        if is_blacklisted(interaction.user):
+            await interaction.response.send_message("⛔ **Access Denied:** You are currently blacklisted from opening tickets in VOID Roleplay.", ephemeral=True)
+            return
+
         val = select.values[0]
         if val == "ticket_cat_report":
             await interaction.response.send_modal(ReportModal())
@@ -263,13 +315,64 @@ class TicketControlsView(ui.View):
             return
         await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
-        messages = [m async for m in channel.history(limit=100)]
+        guild = interaction.guild
+        messages = [m async for m in channel.history(limit=250)]
         messages.reverse()
-        lines = [f"[{m.created_at.strftime('%H:%M:%S')}] {m.author.name}: {m.clean_content or '[Embed/Attachment]'}" for m in messages]
-        transcript_text = "\n".join(lines)
-        if len(transcript_text) > 1900:
-            transcript_text = transcript_text[-1900:]
-        await interaction.followup.send(f"📜 **VOID Roleplay Official Case Transcript:**\n```text\n{transcript_text}\n```", ephemeral=True)
+
+        lines = [
+            "=" * 55,
+            "VOID ROLEPLAY OFFICIAL TICKET CASE TRANSCRIPT",
+            f"Channel: #{channel.name} (ID: {channel.id})",
+            f"Archived By: {interaction.user.name} ({interaction.user.id})",
+            f"Timestamp: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"Total Messages Logged: {len(messages)}",
+            "=" * 55,
+            ""
+        ]
+        for m in messages:
+            ts = m.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            attach_info = f" [Attachments: {', '.join(a.url for a in m.attachments)}]" if m.attachments else ""
+            lines.append(f"[{ts}] {m.author.name} ({m.author.id}): {m.clean_content or '[Attachment/Embed]'}{attach_info}")
+        
+        full_transcript = "\n".join(lines)
+        file_bytes = io.BytesIO(full_transcript.encode("utf-8"))
+        discord_file = discord.File(file_bytes, filename=f"transcript-{channel.name}-{channel.id}.txt")
+
+        log_embed = discord.Embed(
+            title=f"📜 OFFICIAL CASE TRANSCRIPT — #{channel.name.upper()}",
+            description=(
+                f"**Ticket Channel:** #{channel.name} (`{channel.id}`)\n"
+                f"**Archiving Staff:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                f"**Messages Logged:** `{len(messages)}`\n"
+                f"**Archive Timestamp:** <t:{int(datetime.datetime.now().timestamp())}:F>"
+            ),
+            color=VOID_THEME_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        log_embed.set_footer(text="VOID Roleplay Official Transcripts • High Command Archive")
+
+        transcript_channel = guild.get_channel(TRANSCRIPTS_CHANNEL_ID)
+        if not transcript_channel:
+            try:
+                transcript_channel = await bot.fetch_channel(TRANSCRIPTS_CHANNEL_ID)
+            except Exception:
+                transcript_channel = None
+
+        if transcript_channel:
+            try:
+                await transcript_channel.send(embed=log_embed, file=discord_file)
+                await interaction.followup.send(f"✅ **Case Transcript Archived!** Successfully logged into {transcript_channel.mention} with full `.txt` document.", ephemeral=True)
+                return
+            except Exception as e:
+                file_bytes.seek(0)
+                fallback_file = discord.File(file_bytes, filename=f"transcript-{channel.name}-{channel.id}.txt")
+                await interaction.followup.send(f"⚠️ Transcript generated, but failed sending to <#{TRANSCRIPTS_CHANNEL_ID}> ({e}). File attached below:", file=fallback_file, ephemeral=True)
+                return
+        else:
+            file_bytes.seek(0)
+            fallback_file = discord.File(file_bytes, filename=f"transcript-{channel.name}-{channel.id}.txt")
+            await interaction.followup.send(content=f"📜 **Transcript generated for #{channel.name}:**", file=fallback_file, ephemeral=True)
+            return
 
     @ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close")
     async def close_btn(self, interaction: discord.Interaction, button: ui.Button):
@@ -392,6 +495,10 @@ class VoicePanelView(ui.View):
 async def create_ticket_channel(interaction: discord.Interaction, prefix: str, title: str, role_ping: str, fields: dict):
     guild = interaction.guild
     member = interaction.user
+
+    if is_blacklisted(member):
+        await interaction.response.send_message("⛔ **Access Denied:** You are currently blacklisted from opening tickets in VOID Roleplay.", ephemeral=True)
+        return
 
     # Open Tickets Category: 1452274275552723099
     category = guild.get_channel(OPEN_TICKETS_CATEGORY_ID)
@@ -692,8 +799,338 @@ async def on_interaction(interaction: discord.Interaction):
             await interaction.response.send_message(f"✅ `/vc {sub}` executed.", ephemeral=True)
         return
 
+    # 8. /blacklist
+    if cmd_name == "blacklist":
+        if not is_staff(member):
+            await interaction.response.send_message(f"❌ **Access Denied:** Only <@&{STAFF_ROLE_ID}> can manage the ticket blacklist.", ephemeral=True)
+            return
+
+        opts = interaction.data.get("options", [])
+        sub = opts[0].get("name") if opts else None
+        sub_opts = opts[0].get("options", []) if opts else []
+
+        if sub == "add":
+            target_user_id = None
+            reason_str = "Ticket abuse / trolling / violation"
+            for o in sub_opts:
+                if o.get("name") == "user":
+                    target_user_id = int(o.get("value"))
+                elif o.get("name") == "reason":
+                    reason_str = str(o.get("value"))
+
+            if not target_user_id:
+                await interaction.response.send_message("⚠️ Please specify a valid user to blacklist.", ephemeral=True)
+                return
+
+            blacklist_cache.add(target_user_id)
+            save_blacklist(blacklist_cache)
+
+            bl_role = discord.utils.find(lambda r: r.name.lower() in ["blacklisted", "ticket ban", "ticket banned"], guild.roles)
+            target_member = guild.get_member(target_user_id)
+            if bl_role and target_member:
+                try:
+                    await target_member.add_roles(bl_role, reason=f"VOID Blacklist: {reason_str}")
+                except Exception:
+                    pass
+
+            embed = discord.Embed(
+                title="⛔ CITIZEN BLACKLISTED FROM TICKETS",
+                description=f"<@{target_user_id}> (`{target_user_id}`) has been **blacklisted** from opening support tickets.",
+                color=DANGER_COLOR,
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.add_field(name="Reason", value=reason_str, inline=False)
+            embed.add_field(name="Authorized Staff", value=f"{member.mention}", inline=False)
+            embed.set_footer(text="VOID Roleplay Enforcement • Ticket Shield Active")
+            await interaction.response.send_message(embed=embed)
+            return
+
+        elif sub == "remove":
+            target_user_id = None
+            for o in sub_opts:
+                if o.get("name") == "user":
+                    target_user_id = int(o.get("value"))
+
+            if not target_user_id:
+                await interaction.response.send_message("⚠️ Please specify a user to unblacklist.", ephemeral=True)
+                return
+
+            blacklist_cache.discard(target_user_id)
+            save_blacklist(blacklist_cache)
+
+            bl_role = discord.utils.find(lambda r: r.name.lower() in ["blacklisted", "ticket ban", "ticket banned"], guild.roles)
+            target_member = guild.get_member(target_user_id)
+            if bl_role and target_member and bl_role in target_member.roles:
+                try:
+                    await target_member.remove_roles(bl_role, reason="VOID: Blacklist lifted")
+                except Exception:
+                    pass
+
+            embed = discord.Embed(
+                title="✅ CITIZEN REMOVED FROM BLACKLIST",
+                description=f"<@{target_user_id}> (`{target_user_id}`) has been unblacklisted. They can now open tickets.",
+                color=SUCCESS_COLOR,
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.add_field(name="Authorized Staff", value=f"{member.mention}", inline=False)
+            await interaction.response.send_message(embed=embed)
+            return
+
+        elif sub == "check":
+            target_user_id = None
+            for o in sub_opts:
+                if o.get("name") == "user":
+                    target_user_id = int(o.get("value"))
+
+            if not target_user_id:
+                await interaction.response.send_message("⚠️ Please specify a user to check.", ephemeral=True)
+                return
+
+            target_member = guild.get_member(target_user_id)
+            is_bl = (target_user_id in blacklist_cache)
+            if target_member and not is_bl:
+                is_bl = any(r.name.lower() in ["blacklisted", "ticket ban", "ticket banned"] for r in target_member.roles)
+
+            if is_bl:
+                await interaction.response.send_message(f"⛔ **Status:** <@{target_user_id}> is **BLACKLISTED** from creating tickets.", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"✅ **Status:** <@{target_user_id}> is **CLEAR** (Not blacklisted).", ephemeral=True)
+            return
+
+        elif sub == "list":
+            if not blacklist_cache:
+                await interaction.response.send_message("📋 No citizens are currently blacklisted from opening tickets.", ephemeral=True)
+                return
+
+            entries = [f"• <@{uid}> (`{uid}`)" for uid in list(blacklist_cache)[:50]]
+            embed = discord.Embed(
+                title="📋 VOID ROLEPLAY — BLACKLISTED CITIZENS",
+                description="\n".join(entries),
+                color=DANGER_COLOR,
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.set_footer(text=f"Total Blacklisted: {len(blacklist_cache)}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+    # 9. /channel
+    if cmd_name == "channel":
+        if not is_staff(member):
+            await interaction.response.send_message("❌ **Access Denied:** Only Staff can manage channels.", ephemeral=True)
+            return
+
+        opts = interaction.data.get("options", [])
+        sub = opts[0].get("name") if opts else None
+        sub_opts = opts[0].get("options", []) if opts else []
+
+        if sub == "create":
+            ch_name = "new-channel"
+            ch_type = "text"
+            for o in sub_opts:
+                if o.get("name") == "name":
+                    ch_name = str(o.get("value")).lower().replace(" ", "-")
+                elif o.get("name") == "type":
+                    ch_type = str(o.get("value"))
+
+            if ch_type == "voice":
+                new_ch = await guild.create_voice_channel(name=f"🔊 {ch_name}", reason=f"VOID: Created by {member.name}")
+            else:
+                new_ch = await guild.create_text_channel(name=ch_name, reason=f"VOID: Created by {member.name}")
+            await interaction.response.send_message(f"✅ Channel created: {new_ch.mention}", ephemeral=True)
+            return
+
+        elif sub == "delete":
+            ch = interaction.channel
+            await interaction.response.send_message(f"🗑️ Deleting channel #{ch.name}...", ephemeral=True)
+            await ch.delete(reason=f"VOID: Deleted by {member.name}")
+            return
+
+        elif sub == "purge":
+            amount = 10
+            for o in sub_opts:
+                if o.get("name") == "amount":
+                    amount = min(int(o.get("value")), 100)
+            await interaction.response.defer(ephemeral=True)
+            deleted = await interaction.channel.purge(limit=amount)
+            await interaction.followup.send(f"🧹 Purged {len(deleted)} messages.", ephemeral=True)
+            return
+
+        elif sub == "lock":
+            await interaction.channel.set_permissions(guild.default_role, send_messages=False)
+            await interaction.response.send_message("🔒 Channel locked for citizens.", ephemeral=True)
+            return
+
+        elif sub == "unlock":
+            await interaction.channel.set_permissions(guild.default_role, send_messages=True)
+            await interaction.response.send_message("🔓 Channel unlocked for citizens.", ephemeral=True)
+            return
+
+    # 10. /role
+    if cmd_name == "role":
+        if not is_staff(member):
+            await interaction.response.send_message("❌ **Access Denied:** Only Staff can manage roles.", ephemeral=True)
+            return
+
+        opts = interaction.data.get("options", [])
+        sub = opts[0].get("name") if opts else None
+        sub_opts = opts[0].get("options", []) if opts else []
+
+        if sub == "create":
+            r_name = "New Role"
+            r_color = VOID_THEME_COLOR
+            r_perm = "member"
+            for o in sub_opts:
+                if o.get("name") == "name":
+                    r_name = str(o.get("value"))
+                elif o.get("name") == "color":
+                    raw_c = str(o.get("value")).replace("#", "").strip()
+                    try:
+                        r_color = int(raw_c, 16)
+                    except Exception:
+                        r_color = VOID_THEME_COLOR
+                elif o.get("name") == "permissions":
+                    r_perm = str(o.get("value"))
+
+            perms = discord.Permissions.none()
+            if r_perm == "admin":
+                perms = discord.Permissions(administrator=True)
+            elif r_perm == "mod":
+                perms = discord.Permissions(manage_messages=True, kick_members=True, mute_members=True, view_channel=True, send_messages=True)
+            elif r_perm == "member":
+                perms = discord.Permissions(send_messages=True, view_channel=True, read_message_history=True, connect=True, speak=True)
+            elif r_perm == "readonly":
+                perms = discord.Permissions(view_channel=True, read_message_history=True)
+
+            new_role = await guild.create_role(name=r_name, color=discord.Color(r_color), permissions=perms, reason=f"VOID: /role create by {member.name}")
+            await interaction.response.send_message(f"✅ Role {new_role.mention} created successfully.", ephemeral=True)
+            return
+
+        elif sub == "give":
+            target_uid = None
+            target_rid = None
+            for o in sub_opts:
+                if o.get("name") == "user":
+                    target_uid = int(o.get("value"))
+                elif o.get("name") == "role":
+                    target_rid = int(o.get("value"))
+
+            target_m = guild.get_member(target_uid)
+            target_r = guild.get_role(target_rid)
+            if not target_m or not target_r:
+                await interaction.response.send_message("⚠️ Invalid member or role specified.", ephemeral=True)
+                return
+
+            await target_m.add_roles(target_r, reason=f"VOID: Assigned by {member.name}")
+            await interaction.response.send_message(f"✅ Assigned {target_r.mention} to {target_m.mention}.", ephemeral=True)
+            return
+
+        elif sub == "remove":
+            target_uid = None
+            target_rid = None
+            for o in sub_opts:
+                if o.get("name") == "user":
+                    target_uid = int(o.get("value"))
+                elif o.get("name") == "role":
+                    target_rid = int(o.get("value"))
+
+            target_m = guild.get_member(target_uid)
+            target_r = guild.get_role(target_rid)
+            if not target_m or not target_r:
+                await interaction.response.send_message("⚠️ Invalid member or role specified.", ephemeral=True)
+                return
+
+            await target_m.remove_roles(target_r, reason=f"VOID: Removed by {member.name}")
+            await interaction.response.send_message(f"✅ Removed {target_r.mention} from {target_m.mention}.", ephemeral=True)
+            return
+
+        elif sub == "delete":
+            target_rid = None
+            for o in sub_opts:
+                if o.get("name") == "role":
+                    target_rid = int(o.get("value"))
+
+            target_r = guild.get_role(target_rid)
+            if not target_r:
+                await interaction.response.send_message("⚠️ Role not found.", ephemeral=True)
+                return
+
+            await target_r.delete(reason=f"VOID: Deleted by {member.name}")
+            await interaction.response.send_message(f"✅ Role `{target_r.name}` deleted.", ephemeral=True)
+            return
+
+        elif sub == "list":
+            roles_list = [f"• {r.mention} (`{r.id}`) - {len(r.members)} members" for r in guild.roles if r.name != "@everyone"][:25]
+            embed = discord.Embed(
+                title=f"🛡️ {guild.name.upper()} — SERVER ROLES",
+                description="\n".join(roles_list),
+                color=VOID_THEME_COLOR,
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.set_footer(text=f"Total Roles: {len(guild.roles)}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+    # 11. /autorole
+    if cmd_name == "autorole":
+        if not is_staff(member):
+            await interaction.response.send_message("❌ **Access Denied:** Only Staff can configure Auto-Role.", ephemeral=True)
+            return
+
+        opts = interaction.data.get("options", [])
+        sub = opts[0].get("name") if opts else None
+        sub_opts = opts[0].get("options", []) if opts else []
+
+        if sub == "set":
+            target_rid = None
+            for o in sub_opts:
+                if o.get("name") == "role":
+                    target_rid = int(o.get("value"))
+
+            target_r = guild.get_role(target_rid)
+            if not target_r:
+                await interaction.response.send_message("⚠️ Role not found.", ephemeral=True)
+                return
+
+            autorole_cache[guild.id] = target_rid
+            save_autorole(autorole_cache)
+            await interaction.response.send_message(f"✅ **Auto-Role Configured:** New members will automatically receive {target_r.mention}.", ephemeral=True)
+            return
+
+        elif sub == "check":
+            rid = autorole_cache.get(guild.id)
+            if not rid:
+                await interaction.response.send_message("⚠️ No Auto-Role is currently configured for this server.", ephemeral=True)
+                return
+            target_r = guild.get_role(rid)
+            role_display = target_r.mention if target_r else f"`{rid}` (Role deleted)"
+            await interaction.response.send_message(f"ℹ️ **Current Auto-Role:** {role_display}", ephemeral=True)
+            return
+
+        elif sub == "remove":
+            if guild.id in autorole_cache:
+                del autorole_cache[guild.id]
+                save_autorole(autorole_cache)
+            await interaction.response.send_message("✅ Auto-Role disabled. New members will not receive automatic roles.", ephemeral=True)
+            return
+
     # Default fallback
     await interaction.response.send_message(f"✅ Command `/{cmd_name}` received by VOID Roleplay engine.", ephemeral=True)
+
+# ----------------------------------------------------
+# AUTO-ROLE DISPATCHER
+# ----------------------------------------------------
+@bot.event
+async def on_member_join(member):
+    guild = member.guild
+    rid = autorole_cache.get(guild.id)
+    if rid:
+        role = guild.get_role(rid)
+        if role:
+            try:
+                await member.add_roles(role, reason="VOID Roleplay: Auto-Role on join")
+                print(f"[+] Auto-assigned {role.name} to {member.name}")
+            except Exception as e:
+                print(f"[-] Failed to auto-assign role: {e}")
 
 # ----------------------------------------------------
 # 24/7 JOIN-TO-CREATE PATROL GATEWAY
