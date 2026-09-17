@@ -1,0 +1,15 @@
+{
+  "name": "void-roleplay-bot",
+  "version": "1.0.0",
+  "description": "VOID Roleplay FiveM Discord Bot & City Management Engine by officialZen2K",
+  "main": "api/interactions.js",
+  "type": "module",
+  "scripts": {
+    "register": "node scripts/register-commands.js",
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "discord-interactions": "^4.4.0"
+  },
+  "author": "officialZen2K"
+}
