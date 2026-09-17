@@ -18,6 +18,7 @@ DANGER_COLOR = 0xED4245
 
 OPEN_TICKETS_CATEGORY_ID = 1452274275552723099
 CLOSED_TICKETS_CATEGORY_ID = 1549979830068580373
+STAFF_ROLE_ID = 1452274255294234665
 
 def get_token():
     env_token = os.environ.get("DISCORD_TOKEN")
@@ -50,10 +51,12 @@ autorole_cache = {}
 def is_staff(member: discord.Member) -> bool:
     if not member:
         return False
-    perms = member.guild_permissions
-    if perms.administrator or perms.manage_guild or perms.manage_channels or perms.manage_roles:
+    if any(r.id == STAFF_ROLE_ID for r in getattr(member, 'roles', [])):
         return True
-    return any(r.name.lower() in ["staff", "moderator", "admin", "high command", "owner"] for r in member.roles)
+    perms = getattr(member, 'guild_permissions', None)
+    if perms and perms.administrator:
+        return True
+    return False
 
 # ----------------------------------------------------
 # TICKET MODALS
@@ -216,6 +219,9 @@ class TicketControlsView(ui.View):
 
     @ui.button(label="Claim Ticket", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="ticket_claim")
     async def claim_btn(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message(f"❌ **Access Denied:** Only <@&{STAFF_ROLE_ID}> can manage this ticket.", ephemeral=True)
+            return
         embed = discord.Embed(
             title="🛡️ CASE CLAIMED BY STAFF",
             description=f"{interaction.user.mention} has taken ownership of this investigation. All inquiries will be handled directly.",
@@ -226,6 +232,9 @@ class TicketControlsView(ui.View):
 
     @ui.button(label="In Investigation", style=discord.ButtonStyle.secondary, emoji="🔍", custom_id="ticket_investigate")
     async def investigate_btn(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message(f"❌ **Access Denied:** Only <@&{STAFF_ROLE_ID}> can manage this ticket.", ephemeral=True)
+            return
         embed = discord.Embed(
             title="🔍 STATUS UPDATE: UNDER INVESTIGATION",
             description="Staff is currently reviewing server logs, database records, and video proof.",
@@ -236,6 +245,9 @@ class TicketControlsView(ui.View):
 
     @ui.button(label="Resolve Case", style=discord.ButtonStyle.success, emoji="✅", custom_id="ticket_resolve")
     async def resolve_btn(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message(f"❌ **Access Denied:** Only <@&{STAFF_ROLE_ID}> can resolve tickets.", ephemeral=True)
+            return
         embed = discord.Embed(
             title="✅ CASE CONCLUDED & RESOLVED",
             description=f"This case has been marked as **RESOLVED** by {interaction.user.mention}. Inquiry concluded.",
@@ -246,6 +258,9 @@ class TicketControlsView(ui.View):
 
     @ui.button(label="Transcript", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="ticket_transcript")
     async def transcript_btn(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message(f"❌ **Access Denied:** Only <@&{STAFF_ROLE_ID}> can generate case transcripts.", ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
         messages = [m async for m in channel.history(limit=100)]
@@ -258,6 +273,9 @@ class TicketControlsView(ui.View):
 
     @ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close")
     async def close_btn(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message(f"❌ **Access Denied:** Only <@&{STAFF_ROLE_ID}> can close tickets.", ephemeral=True)
+            return
         guild = interaction.guild
         ch = interaction.channel
         
@@ -273,7 +291,7 @@ class TicketControlsView(ui.View):
 
         embed = discord.Embed(
             title="🔒 TICKET CLOSED & ARCHIVED",
-            description=f"This ticket was closed by {interaction.user.mention} and moved to <#{CLOSED_TICKETS_CATEGORY_ID}>.\nHigh Command can reopen this case or permanently delete this channel.",
+            description=f"This ticket was closed by {interaction.user.mention} and moved to <#{CLOSED_TICKETS_CATEGORY_ID}>.\nStaff can reopen this case or permanently delete this channel.",
             color=DANGER_COLOR,
             timestamp=datetime.datetime.now(datetime.timezone.utc)
         )
@@ -285,6 +303,9 @@ class TicketCloseView(ui.View):
 
     @ui.button(label="Reopen Ticket", style=discord.ButtonStyle.secondary, emoji="🔓", custom_id="ticket_reopen")
     async def reopen_btn(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message(f"❌ **Access Denied:** Only <@&{STAFF_ROLE_ID}> can reopen tickets.", ephemeral=True)
+            return
         guild = interaction.guild
         ch = interaction.channel
         
@@ -308,6 +329,9 @@ class TicketCloseView(ui.View):
 
     @ui.button(label="Delete Channel", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="ticket_delete")
     async def delete_btn(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message(f"❌ **Access Denied:** Only <@&{STAFF_ROLE_ID}> can delete ticket channels.", ephemeral=True)
+            return
         await interaction.response.send_message("🗑️ Deleting ticket room in 3 seconds...", ephemeral=True)
         await asyncio.sleep(3)
         await interaction.channel.delete(reason="VOID Roleplay: Ticket Decommissioned")
@@ -381,8 +405,19 @@ async def create_ticket_channel(interaction: discord.Interaction, prefix: str, t
     }
 
     # Add staff role overwrites
+    staff_role = guild.get_role(STAFF_ROLE_ID)
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(
+            read_messages=True,
+            send_messages=True,
+            attach_files=True,
+            embed_links=True,
+            read_message_history=True,
+            manage_messages=True
+        )
+
     for role in guild.roles:
-        if role.name.lower() in ["staff", "moderator", "admin", "high command"]:
+        if role.id == STAFF_ROLE_ID or role.name.lower() in ["staff", "moderator", "admin", "high command"]:
             overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True, embed_links=True, read_message_history=True, manage_messages=True)
 
     safe_name = member.name.lower()[:15]
@@ -412,7 +447,7 @@ async def create_ticket_channel(interaction: discord.Interaction, prefix: str, t
         embed.set_footer(text=f"Ticket ID: {ch.id} • High Command")
 
         await ch.send(
-            content=f"👋 Welcome {member.mention}! An official inquiry has been opened for `{role_ping}`.",
+            content=f"👋 Welcome {member.mention}! An official inquiry has been opened for <@&{STAFF_ROLE_ID}>.",
             embed=embed,
             view=TicketControlsView()
         )
