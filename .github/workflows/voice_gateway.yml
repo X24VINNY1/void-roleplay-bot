@@ -1,0 +1,38 @@
+name: VOID Roleplay Voice Gateway 24/7
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: void-voice-gateway
+  cancel-in-progress: true
+
+jobs:
+  run-voice-gateway:
+    name: 🔊 VOID Roleplay Voice Gateway (Join-to-Create)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install discord.py
+        run: |
+          pip install --upgrade pip
+          pip install discord.py requests
+
+      - name: 🚀 Launch Join-to-Create Patrol Gateway
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        run: |
+          python python_standalone/voice_gateway.py
